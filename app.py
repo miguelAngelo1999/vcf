@@ -15,7 +15,7 @@ if sys.platform == 'win32':
 
 
 # Version for update checking
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.6.1"
 
 # CRITICAL FIX: Set working directory to exe location
 if getattr(sys, 'frozen', False):
