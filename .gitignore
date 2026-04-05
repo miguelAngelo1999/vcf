@@ -17,9 +17,7 @@ test_processing.log
 
 # Test and sensitive files
 *.vcf
-*.txt
 *.xlsx
-test*.py
 contatos*
 alvina*
 
@@ -36,7 +34,6 @@ exe_fix.py
 build_fixed*
 
 # Documentation that's not needed
-*.md
 RESTORE_*
 VCF_PROCESSING_*
 

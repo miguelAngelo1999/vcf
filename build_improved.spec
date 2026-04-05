@@ -3,23 +3,59 @@
 # Improved PyInstaller spec for VCF Processor
 # Build with: pyinstaller build_improved.spec
 
+import sys
+import os
+from pathlib import Path
+
+# Add runtime hook directory
+sys.path.insert(0, os.path.abspath('.'))
+
+# --- Helper code to automatically find and include required C++ DLLs ---
+# This solves the "Failed to load Python DLL" error on clean machines.
+python_dir = Path(sys.executable).parent
+vc_dlls = []
+for file in os.listdir(python_dir):
+    # Find all vcruntime and msvcp dlls required by the Python interpreter
+    if file.lower().startswith(('vcruntime', 'msvcp')) and file.lower().endswith('.dll'):
+        source_path = os.path.join(python_dir, file)
+        # Add the DLL to be copied to the root of the application folder
+        vc_dlls.append((source_path, '.'))
+
+print(f"Found C++ runtime DLLs to bundle: {vc_dlls}")
+# --- End of helper code ---
+
+
 block_cipher = None
 
 # Analysis block with comprehensive dependencies
 a = Analysis(
     ['app.py'],
     pathex=[],
-    binaries=[],
+    
+    # Runtime hooks to prevent pyarrow errors
+    runtime_hooks=[],
+    
+    # MODIFIED: Include the C++ DLLs we found above
+    binaries=vc_dlls,
     
     # Include all necessary data files
     datas=[
         ('config.ini', '.'),
+        ('update_config.json', '.'),
         ('static', 'static'),
         ('templates', 'templates'),
         ('vcf_extractor.py', '.'),
         ('config.py', '.'),
         ('updater.py', '.'),
         ('installer.py', '.'),
+    ],
+    
+    # Exclude problematic PyArrow files to prevent WinRAR errors
+    excludes=[
+        'tkinter',
+        'matplotlib',
+        'PIL',
+        'scipy',
     ],
     
     # Comprehensive hidden imports for VCF processing
@@ -90,13 +126,6 @@ a = Analysis(
     
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
-    excludes=[
-        'tkinter',
-        'matplotlib',
-        'PIL',
-        'scipy',
-    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -131,9 +160,9 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=False,  # Disable UPX for faster startup
-    upx_exclude=[],
-    name='VCF_Processor_Fast',
+a.datas,
+strip=False,
+upx=False, # Disable UPX for faster startup
+upx_exclude=[],
+name='VCF_Processor_Fast',
 )

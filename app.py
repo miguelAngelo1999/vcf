@@ -5,17 +5,32 @@ import webview
 import threading
 import importlib
 from flask import Flask, render_template, request, jsonify
+from flask_cors import CORS
+import logging
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 app.config['TEMPLATES_AUTO_RELOAD'] = False
-import time
 
+# Setup detailed logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('app_debug.log', encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+import time
+from updater import check_for_updates, download_and_run_installer
 # This import is still good practice to encourage the correct backend
 if sys.platform == 'win32':
     import webview.platforms.edgechromium
 
 
 # Version for update checking
-APP_VERSION = "2.6.1"
+APP_VERSION = "2.9.35"
 
 # CRITICAL FIX: Set working directory to exe location
 if getattr(sys, 'frozen', False):
@@ -73,9 +88,45 @@ else:
 
 LOG_FILENAME = os.path.join(application_path, "NAO_APAGAR.log")
 
+# Log file location with fallback
+def get_log_filename():
+    import tempfile
+    log_locations = [
+        os.path.join(application_path, "NAO_APAGAR.log"),  # Current directory
+        os.path.join(os.path.expanduser("~"), 'Documents', 'VCF_Processor_logs', 'NAO_APAGAR.log'),  # User Documents
+        os.path.join(os.environ.get('PROGRAMDATA', 'C:\\ProgramData'), 'VCF_Processor', 'NAO_APAGAR.log'),  # ProgramData
+        os.path.join(os.path.expanduser("~"), 'AppData', 'Local', 'VCF_Processor', 'NAO_APAGAR.log'),  # Local AppData
+    ]
+    
+    for log_path in log_locations:
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            
+            # Test if we can write to the location
+            test_file = os.path.join(os.path.dirname(log_path), 'test_write.tmp')
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+            
+            return log_path
+        except (PermissionError, OSError):
+            continue
+    
+    # Fallback to temp directory
+    temp_log = os.path.join(tempfile.gettempdir(), 'VCF_Processor_NAO_APAGAR.log')
+    print(f"⚠️  Warning: Using temp directory for log file: {temp_log}")
+    return temp_log
+
+# Centralized log path configuration
+LOG_PATH = get_log_filename()
+
+# Update global references to use the centralized path
+LOG_FILENAME = LOG_PATH
+
 def initialize_log_from_xlsx():
     """Initialize log from NAO_APAGAR.xlsx in Documents folder on first run"""
-    if os.path.exists(LOG_FILENAME) and os.path.getsize(LOG_FILENAME) > 0:
+    if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 0:
         return
     
     docs_path = os.path.expanduser("~/Documents")
@@ -100,7 +151,7 @@ def initialize_log_from_xlsx():
                 if len(digits) >= 8:
                     numbers.add(int(digits))
         
-        with open(LOG_FILENAME, 'w', encoding='utf-8') as f:
+        with open(LOG_PATH, 'w', encoding='utf-8') as f:
             for number in sorted(numbers):
                 f.write(f"{number}\n")
         
@@ -117,6 +168,8 @@ initial_data_for_ui = {
 def create_default_config(config_path):
     default_config = '''[Settings]
 light_mode = follow
+excel_format = standard
+sender_indicator = Contato Recebido
 
 [Titles]
 titles_to_remove = [
@@ -153,7 +206,21 @@ def read_config_ini():
         return 'static', []
         
     config = configparser.ConfigParser(allow_no_value=True)
-    with open(config_ini_path_used, encoding='utf-8') as f: lines = f.readlines()
+    
+    # Try to read with different encodings
+    encodings = ['utf-8', 'latin-1', 'cp1252']
+    lines = []
+    for encoding in encodings:
+        try:
+            with open(config_ini_path_used, 'r', encoding=encoding) as f:
+                lines = f.readlines()
+            break
+        except UnicodeDecodeError:
+            continue
+    
+    if not lines:
+        # Fallback to default if all encodings fail
+        return 'static', []
     filtered_lines, in_titles, current_section = [], False, None
     for line in lines:
         stripped = line.strip()
@@ -172,6 +239,8 @@ def read_config_ini():
             filtered_lines.append(line)
     config.read_string(''.join(filtered_lines))
     light_mode = config.get('Settings', 'light_mode', fallback='static')
+    excel_format = config.get('Settings', 'excel_format', fallback='standard')
+    sender_indicator = config.get('Settings', 'sender_indicator', fallback='Contato Recebido')
     titles_lines, in_titles = [], False
     for line in lines:
         stripped = line.strip()
@@ -193,14 +262,47 @@ def read_config_ini():
     except Exception:
         try: titles = ast.literal_eval(titles_str)
         except Exception: titles = []
-    return light_mode, titles
+    return light_mode, excel_format, sender_indicator, titles
 
-LIGHT_MODE_DEFAULT, TITLES_TO_REMOVE = read_config_ini()
+LIGHT_MODE_DEFAULT, EXCEL_FORMAT_DEFAULT, SENDER_INDICATOR_DEFAULT, TITLES_TO_REMOVE = read_config_ini()
 
-app_log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_debug.log')
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
-                    handlers=[logging.FileHandler(app_log_file, encoding='utf-8'), logging.StreamHandler(sys.stdout)])
-logger = logging.getLogger(__name__)
+# Logging configuration with fallback locations
+def setup_logging():
+    log_locations = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_debug.log'),  # Current directory
+        os.path.join(os.path.expanduser("~"), 'Documents', 'VCF_Processor_logs', 'app_debug.log'),  # User Documents
+        os.path.join(os.environ.get('PROGRAMDATA', 'C:\\ProgramData'), 'VCF_Processor', 'app_debug.log'),  # ProgramData
+        os.path.join(os.path.expanduser("~"), 'AppData', 'Local', 'VCF_Processor', 'app_debug.log'),  # Local AppData
+    ]
+    
+    handlers = [logging.StreamHandler(sys.stdout)]  # Always include console output
+    
+    for log_path in log_locations:
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            
+            # Test if we can write to the location
+            test_file = os.path.join(os.path.dirname(log_path), 'test_write.tmp')
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+            
+            # Add file handler
+            handlers.append(logging.FileHandler(log_path, encoding='utf-8'))
+            print(f"[OK] Logging to: {log_path}")
+            break
+        except (PermissionError, OSError) as e:
+            print(f"[WARNING] Cannot write to {log_path}: {e}")
+            continue
+    
+    if len(handlers) == 1:  # Only console handler
+        print("[WARNING] Warning: Logging to console only due to permission issues")
+    
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=handlers)
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
 
 def on_drag(e): pass
 
@@ -258,13 +360,18 @@ class Api:
         self._window = None
         self.initial_width = 800
         self.initial_height = 750
+        self.processor = None  # Reference to current VCFProcessor instance
 
     def set_window(self, window):
         self._window = window
 
+    def set_processor(self, processor):
+        """Set the current VCFProcessor instance"""
+        self.processor = processor
+
     def select_file(self):
-        file_paths = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False, file_types=('VCF Files (*.vcf)',))
-        return file_paths[0] if file_paths else None
+        file_paths = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True, file_types=('VCF Files (*.vcf)',))
+        return file_paths if file_paths else []
 
     def close_window(self):
         self._window.destroy()
@@ -274,6 +381,34 @@ class Api:
 
     def set_window_position(self, x, y):
         self._window.move(x, y)
+
+    def open_file_path(self, path):
+        """Open a file with the default system application"""
+        if not path:
+            logger.error(f"Error: Empty file path provided")
+            return
+            
+        # Convert relative path to absolute path
+        if path.startswith('~/Documents/'):
+            # Extract the filename from the relative path
+            filename = path.replace('~/Documents/', '')
+            # Get the absolute Documents path
+            docs_path = os.path.expanduser("~/Documents")
+            path = os.path.join(docs_path, filename)
+        
+        if not os.path.exists(path):
+            logger.error(f"Error: Cannot open file, path does not exist: {path}")
+            return
+        logger.info(f"Attempting to open file: {path}")
+        try:
+            if sys.platform == "win32": 
+                os.startfile(os.path.realpath(path))
+            elif sys.platform == "darwin": 
+                subprocess.run(["open", path])
+            else: 
+                subprocess.run(["xdg-open", path])
+        except Exception as e: 
+            logger.error(f"Failed to open file: {e}")
 
     # <<< NOVO >>> Funções para obter e definir o tamanho absoluto da janela para o JS.
     def get_window_size(self):
@@ -297,18 +432,34 @@ class Api:
             self._window.resize(self.initial_width, self.initial_height)
 
     def open_log_file_with_notepad(self):
-        subprocess.run(["notepad.exe", LOG_FILENAME], check=True)
-
-    def open_file_path(self, path):
-        if not os.path.exists(path):
-            logger.error(f"Error: Cannot open file, path does not exist: {path}")
-            return
-        logger.info(f"Attempting to open file: {path}")
+        # Get the current processor from session_data
+        current_log_path = LOG_PATH  # Default fallback
+        
+        with session_lock:
+            processor = session_data.get('processor')
+            if processor and hasattr(processor, 'log_file_path'):
+                current_log_path = processor.log_file_path
+        
+        # Ensure the log file exists before trying to open it
+        if not os.path.exists(current_log_path):
+            logger.warning(f"Log file does not exist: {current_log_path}")
+            # Try to create an empty log file
+            try:
+                os.makedirs(os.path.dirname(current_log_path), exist_ok=True)
+                with open(current_log_path, 'w', encoding='utf-8') as f:
+                    pass  # Create empty file
+                logger.info(f"Created empty log file: {current_log_path}")
+            except Exception as e:
+                logger.error(f"Failed to create log file {current_log_path}: {e}")
+                return
+        
         try:
-            if sys.platform == "win32": os.startfile(os.path.realpath(path))
-            elif sys.platform == "darwin": subprocess.run(["open", path])
-            else: subprocess.run(["xdg-open", path])
-        except Exception as e: logger.error(f"Failed to open file: {e}")
+            subprocess.run(["notepad.exe", current_log_path], check=True)
+            logger.info(f"Opened log file with notepad: {current_log_path}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to open log file with notepad: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error opening log file: {e}")
 
     def check_for_updates(self):
         try:
@@ -316,17 +467,30 @@ class Api:
             return check_for_updates()
         except ImportError:
             return {"update_available": False, "error": "Updater not available"}
+        
+    def get_app_version(self):
+        """Returns the hardcoded app version to the UI."""
+        return APP_VERSION
 
 api = Api()
 
 # --- Centralized Processing Logic ---
-def process_vcf_file_logic(vcf_path):
+def process_vcf_file_logic(vcf_path, sender_name=None, excel_format=None):
     if not vcf_path or not os.path.isfile(vcf_path):
         return jsonify({"error": "Caminho do arquivo VCF é inválido ou não encontrado."}), 400
     try:
         global TITLES_TO_REMOVE
-        _, TITLES_TO_REMOVE = read_config_ini()
-        processor = VCFProcessor(log_file_path=LOG_FILENAME, titles_to_remove=TITLES_TO_REMOVE)
+        _, EXCEL_FORMAT_DEFAULT, SENDER_INDICATOR_DEFAULT, TITLES_TO_REMOVE = read_config_ini()
+        
+        # Use excel format from request if provided, otherwise use config default
+        actual_excel_format = excel_format if excel_format else EXCEL_FORMAT_DEFAULT
+        
+        processor = VCFProcessor(log_file_path=LOG_PATH, titles_to_remove=TITLES_TO_REMOVE, excel_format=actual_excel_format, sender_indicator=SENDER_INDICATOR_DEFAULT)
+        
+        # Update processor with sender name from GUI if provided
+        if sender_name:
+            processor.update_sender_name(sender_name)
+        
         unique_contacts, duplicate_contacts = processor.get_unique_and_duplicate_contacts(vcf_path)
         
         if not duplicate_contacts:
@@ -378,23 +542,71 @@ def save_light_mode():
             return jsonify({'status': 'error', 'message': str(e)}), 500
     return jsonify({'status': 'success'})
 
-@app.route('/get_light_mode', methods=['GET'])
-def get_light_mode():
-    light_mode, _ = read_config_ini()
-    return jsonify({'lightMode': light_mode})
+@app.route('/save_excel_format', methods=['POST'])
+def save_excel_format():
+    data = request.json
+    excel_format = data.get('excelFormat') or data.get('excel_format')
+    if excel_format:
+        try:
+            if not os.path.exists(config_ini_path): create_default_config(config_ini_path)
+            with open(config_ini_path, 'r', encoding='utf-8') as f: lines = f.readlines()
+            for i, line in enumerate(lines):
+                if line.strip().startswith('excel_format'):
+                    lines[i] = f'excel_format = {excel_format}\n'; break
+            else:
+                for i, line in enumerate(lines):
+                    if line.strip() == '[Settings]':
+                        lines.insert(i+1, f'excel_format = {excel_format}\n'); break
+            with open(config_ini_path, 'w', encoding='utf-8') as f: f.writelines(lines)
+        except Exception as e:
+            logger.error(f"Error saving excel format: {e}")
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+    return jsonify({'status': 'success'})
 
 @app.route('/check_updates', methods=['GET'])
-def check_updates():
-    try:
-        from updater import check_for_updates
-        return jsonify(check_for_updates())
-    except Exception as e:
-        return jsonify({"update_available": False, "error": str(e)})
+def check_updates_route():
+    # Pass the current app version to the check function
+    update_info = check_for_updates(APP_VERSION) # This will now work
+    return jsonify(update_info)
+
+# In app.py
+
+@app.route('/download_update', methods=['POST'])
+def download_update_route():
+    data = request.get_json()
+    download_url = data.get('download_url')
+    update_type = data.get('update_type', 'exe')
+    password = data.get('password', '')
+    if not download_url:
+        return jsonify({"success": False, "error": "Download URL not provided."}), 400
+
+    # This function now just launches the waiter and returns.
+    result = download_and_run_installer(download_url, update_type, password)
+    
+    # If the launcher was successfully started, we now terminate our own application.
+    if result.get("success"):
+        def shutdown_app():
+            # Wait a very short moment to ensure the HTTP response is sent.
+            time.sleep(1)
+            # Use the same shutdown mechanism as the old GitHub version
+            try:
+                import requests
+                requests.post('http://127.0.0.1:5000/shutdown', timeout=5)
+            except Exception as e:
+                logger.error(f"Error sending shutdown request to Flask: {e}")
+            finally:
+                # Ensure the main Python process exits
+                os._exit(0)
+        
+        # Run the shutdown in a separate thread so the HTTP response can be sent.
+        threading.Thread(target=shutdown_app).start()
+
+    return jsonify(result)
 
 @app.route('/get_titles', methods=['GET'])
 def get_titles():
     global TITLES_TO_REMOVE
-    _, TITLES_TO_REMOVE = read_config_ini()
+    _, EXCEL_FORMAT_DEFAULT, SENDER_INDICATOR_DEFAULT, TITLES_TO_REMOVE = read_config_ini()
     titles = TITLES_TO_REMOVE
     titles.sort(key=str.lower)
     return jsonify({"titles": titles})
@@ -426,7 +638,7 @@ def save_titles():
 @app.route('/get_processed_numbers', methods=['GET'])
 def get_processed_numbers():
     try:
-        with open(LOG_FILENAME, 'r', encoding='utf-8') as f: lines = f.readlines()
+        with open(LOG_PATH, 'r', encoding='utf-8') as f: lines = f.readlines()
         processed_numbers = [int(line.strip()) for line in lines if line.strip().isdigit()]
         return jsonify({"numbers": processed_numbers}), 200
     except FileNotFoundError: return jsonify({"error": "Log file not found."}), 404
@@ -440,7 +652,7 @@ def add_processed_numbers():
     if not isinstance(numbers_to_add, list) or not all(isinstance(num, int) for num in numbers_to_add):
         return jsonify({"error": "Invalid input format. Expected a list of integers."}), 400
     try:
-        with open(LOG_FILENAME, 'a', encoding='utf-8') as f:
+        with open(LOG_PATH, 'a', encoding='utf-8') as f:
             for number in numbers_to_add: f.write(f"{number}\n")
         return jsonify({"status": "success"}), 200
     except Exception as e: return jsonify({"error": str(e)}), 500
@@ -453,8 +665,8 @@ def remove_processed_numbers():
     if not isinstance(numbers_to_remove, list) or not all(isinstance(num, int) for num in numbers_to_remove):
         return jsonify({"error": "Invalid input format. Expected a list of integers."}), 400
     try:
-        with open(LOG_FILENAME, 'r', encoding='utf-8') as f: lines = f.readlines()
-        with open(LOG_FILENAME, 'w', encoding='utf-8') as f:
+        with open(LOG_PATH, 'r', encoding='utf-8') as f: lines = f.readlines()
+        with open(LOG_PATH, 'w', encoding='utf-8') as f:
             for line in lines:
                 if line.strip() not in map(str, numbers_to_remove): f.write(line)
         return jsonify({"status": "success"}), 200
@@ -468,13 +680,177 @@ def get_session_data():
 
 @app.route('/start_vcf_processing', methods=['POST'])
 def start_vcf_processing():
-    vcf_path = request.get_json().get('vcf_path')
-    return process_vcf_file_logic(vcf_path)
+    data = request.get_json()
+    vcf_path = data.get('vcf_path')
+    sender_name = data.get('senderName', 'Contato Recebido')
+    excel_format = data.get('excelFormat')
+    return process_vcf_file_logic(vcf_path, sender_name, excel_format)
 
 @app.route('/process_dropped_vcf', methods=['POST'])
 def process_dropped_vcf():
-    vcf_path = request.get_json().get('vcf_path')
-    return process_vcf_file_logic(vcf_path)
+    logger.info("=== PROCESS DROPPED VCF REQUEST ===")
+    try:
+        data = request.get_json()
+        logger.info(f"Request data: {data}")
+        vcf_path = data.get('vcf_path')
+        sender_name = data.get('senderName', 'Contato Recebido')  # Get sender name from GUI
+        excel_format = data.get('excelFormat')  # Get excel format from GUI
+        logger.info(f"VCF path: {vcf_path}")
+        logger.info(f"Sender name: {sender_name}")
+        logger.info(f"Excel format: {excel_format}")
+        result = process_vcf_file_logic(vcf_path, sender_name, excel_format)
+        logger.info(f"Process result: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"Error in process_dropped_vcf: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/start_batch_processing', methods=['POST'])
+def start_batch_processing():
+    logger.info("=== START BATCH PROCESSING REQUEST ===")
+    try:
+        data = request.get_json()
+        logger.info(f"Request data: {data}")
+        vcf_paths = data.get('vcf_paths', [])
+        sender_name = data.get('senderName', 'Contato Recebido')  # Get sender name from GUI
+        logger.info(f"VCF paths: {vcf_paths}")
+        logger.info(f"Sender name: {sender_name}")
+        
+        if not vcf_paths:
+            logger.error("No VCF files provided")
+            return jsonify({"error": "Nenhum arquivo VCF fornecido."}), 400
+        
+        global TITLES_TO_REMOVE
+        _, EXCEL_FORMAT_DEFAULT, SENDER_INDICATOR_DEFAULT, TITLES_TO_REMOVE = read_config_ini()
+        processor = VCFProcessor(log_file_path=LOG_PATH, titles_to_remove=TITLES_TO_REMOVE, excel_format=EXCEL_FORMAT_DEFAULT, sender_indicator=SENDER_INDICATOR_DEFAULT)
+        
+        # Update processor with sender name from GUI
+        processor.update_sender_name(sender_name)
+        
+        all_unique_contacts = []
+        all_duplicate_contacts = []
+        
+        # Process each VCF file
+        for i, vcf_path in enumerate(vcf_paths):
+            if os.path.isfile(vcf_path):
+                logging.info(f"Processing batch file {i+1}/{len(vcf_paths)}: {vcf_path}")
+                unique_contacts, duplicate_contacts = processor.get_unique_and_duplicate_contacts(vcf_path)
+                all_unique_contacts.extend(unique_contacts)
+                all_duplicate_contacts.extend(duplicate_contacts)
+                logging.info(f"Processed {len(unique_contacts)} unique, {len(duplicate_contacts)} duplicates from file {i+1}")
+        
+        # Remove duplicates from combined unique contacts (in case same number appears in different files)
+        # But preserve already processed contacts as duplicates
+        seen_numbers = set()
+        filtered_unique_contacts = []
+        already_processed_contacts = []
+        
+        for contact in all_unique_contacts:
+            if contact['cleaned_number'] not in seen_numbers:
+                seen_numbers.add(contact['cleaned_number'])
+                # Check if this contact was already processed
+                if contact['cleaned_number'] in processor.processed_numbers_log:
+                    already_processed_contacts.append(contact)
+                else:
+                    filtered_unique_contacts.append(contact)
+        
+        # Add already processed contacts to duplicates list
+        all_duplicate_contacts.extend(already_processed_contacts)
+        
+        logging.info(f"Batch summary: {len(filtered_unique_contacts)} final unique contacts, {len(all_duplicate_contacts)} duplicates, {len(already_processed_contacts)} already processed")
+        
+        # Check if we have any duplicates (same logic as single file processing)
+        if not all_duplicate_contacts:
+            # No duplicates found - process all unique contacts
+            logging.info("Nenhuma duplicata encontrada no batch. Processando contatos únicos automaticamente.")
+            output_dir = os.path.expanduser("~/Documents")
+            base_name = "Contatos_Batch_Processados"
+            output_file = processor.process_and_save(filtered_unique_contacts, output_dir, base_name)
+            
+            # Convert to relative path for display with Windows backslashes
+            if output_file:
+                docs_path = os.path.expanduser("~/Documents")
+                if output_file.startswith(docs_path):
+                    relative_path = os.path.relpath(output_file, docs_path)
+                    display_path = f"~\\Documents\\{relative_path.replace('/', '\\')}"
+                else:
+                    display_path = output_file.replace('/', '\\')
+            else:
+                display_path = "None"
+                
+            return jsonify({
+                "message": f"Processamento batch concluído. {len(filtered_unique_contacts)} contatos únicos de {len(vcf_paths)} arquivos.",
+                "output_file": display_path,
+                "duplicates": []
+            })
+        else:
+            # Has duplicates - show selection UI (same as single file)
+            with session_lock:
+                session_data['processor'] = processor
+                session_data['batch_vcf_paths'] = vcf_paths
+                session_data['unique_contacts'] = filtered_unique_contacts
+                session_data.pop('output_base_name', None)
+            
+            # Even if filtered_unique_contacts is empty, we still show the duplicate selector
+            # The user can choose which duplicates to process
+            logging.info(f"Returning {len(all_duplicate_contacts)} duplicates to frontend")
+            if all_duplicate_contacts:
+                sample_duplicate = all_duplicate_contacts[0]
+                logging.info(f"Sample duplicate structure: {sample_duplicate}")
+            
+            response_data = {
+                "message": f"Encontradas {len(all_duplicate_contacts)} duplicatas no batch de {len(vcf_paths)} arquivos.",
+                "duplicates": all_duplicate_contacts,
+                "unique_contacts": filtered_unique_contacts  # May be empty if all are duplicates
+                # NO output_file when there are duplicates - this forces frontend to show duplicate selector
+            }
+            logging.info(f"Full response to frontend: {response_data}")
+            
+            return jsonify(response_data)
+            
+    except Exception as e:
+        logger.error(f"Error in batch processing: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/get_light_mode', methods=['GET'])
+def get_light_mode():
+    try:
+        global LIGHT_MODE_DEFAULT
+        LIGHT_MODE_DEFAULT, _, _, _ = read_config_ini()
+        return jsonify({"lightMode": LIGHT_MODE_DEFAULT})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/get_excel_format', methods=['GET'])
+def get_excel_format():
+    try:
+        _, EXCEL_FORMAT_DEFAULT, _, _ = read_config_ini()
+        return jsonify({"excelFormat": EXCEL_FORMAT_DEFAULT})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/get_sender_indicator', methods=['GET'])
+def get_sender_indicator():
+    try:
+        global TITLES_TO_REMOVE
+        _, EXCEL_FORMAT_DEFAULT, SENDER_INDICATOR_DEFAULT, TITLES_TO_REMOVE = read_config_ini()
+        return jsonify({"senderIndicator": SENDER_INDICATOR_DEFAULT})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/save_sender_indicator', methods=['POST'])
+def save_sender_indicator():
+    try:
+        data = request.get_json()
+        sender_indicator = data.get('senderIndicator', 'Contato Recebido')
+        
+        # Don't save to config - just return success for current session
+        logging.info(f"Using sender indicator for current session: {sender_indicator}")
+        return jsonify({"status": "success", "senderIndicator": sender_indicator})
+        
+    except Exception as e:
+        logging.error(f"Error handling sender indicator: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/start_text_processing', methods=['POST'])
 def start_text_processing():
@@ -483,8 +859,8 @@ def start_text_processing():
         return jsonify({"error": "Nenhum texto fornecido."}), 400
     try:
         global TITLES_TO_REMOVE
-        _, TITLES_TO_REMOVE = read_config_ini()
-        processor = VCFProcessor(log_file_path=LOG_FILENAME, titles_to_remove=TITLES_TO_REMOVE)
+        _, EXCEL_FORMAT_DEFAULT, SENDER_INDICATOR_DEFAULT, TITLES_TO_REMOVE = read_config_ini()
+        processor = VCFProcessor(log_file_path=LOG_PATH, titles_to_remove=TITLES_TO_REMOVE, excel_format=EXCEL_FORMAT_DEFAULT, sender_indicator=SENDER_INDICATOR_DEFAULT)
         unique_contacts, duplicate_contacts = processor.get_unique_and_duplicate_contacts_from_text(text_content)
         
         if not duplicate_contacts:
@@ -511,15 +887,20 @@ def start_text_processing():
 def reprocess_selected():
     data = request.get_json()
     selected_to_reprocess = data.get('selected_to_reprocess', [])
+    sender_name = data.get('senderName', 'Contato Recebido')  # Get sender name from GUI
     logging.info(f"Reprocessing {len(selected_to_reprocess)} selected contacts")
     with session_lock:
         processor = session_data.get('processor')
         vcf_path = session_data.get('vcf_path')
+        batch_vcf_paths = session_data.get('batch_vcf_paths')
         output_base_name = session_data.get('output_base_name')
         unique_contacts = session_data.get('unique_contacts', [])
     if not processor:
         return jsonify({"error": "Session expired. Please start over."}), 400
     try:
+        # Update processor with sender name from GUI
+        processor.update_sender_name(sender_name)
+        
         numbers_to_remove = [contact['cleaned_number'] for contact in selected_to_reprocess]
         if numbers_to_remove:
             processor.remove_from_log(numbers_to_remove)
@@ -529,6 +910,11 @@ def reprocess_selected():
             abs_path = os.path.abspath(vcf_path)
             output_dir = os.path.dirname(abs_path)
             base_name = os.path.splitext(os.path.basename(abs_path))[0]
+        elif batch_vcf_paths:
+            # Handle batch mode with timestamped output
+            output_dir = os.path.dirname(os.path.abspath(batch_vcf_paths[0]))
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            base_name = f"Batch_Processed_{timestamp}"
         else:
             output_dir = os.path.expanduser("~/Documents")
             base_name = output_base_name
@@ -547,13 +933,47 @@ def reprocess_selected():
 
 @app.route('/shutdown', methods=['POST'])
 def shutdown():
-    shutdown_func = request.environ.get('werkzeug.server.shutdown')
-    if shutdown_func is None: raise RuntimeError('Not running with the Werkzeug Server')
-    shutdown_func()
+    # Use Flask's built-in server shutdown function
+    func = request.environ.get('werkzeug.server.shutdown')
+    if func is None:
+        # Try alternative shutdown methods for Flask's built-in server
+        try:
+            # Create a minimal server error to trigger shutdown
+            from flask import Response
+            raise RuntimeError('Server shutdown initiated')
+        except:
+            # If that doesn't work, use os._exit as fallback
+            def shutdown_app():
+                time.sleep(1)
+                os._exit(0)
+            threading.Thread(target=shutdown_app).start()
+            return jsonify({"success": True, "message": "Shutdown initiated"})
+    else:
+        func()
     return 'Server shutting down...'
 
 # --- Main Execution Block ---
+def check_single_instance():
+    """Check if another instance is already running"""
+    import psutil
+    current_pid = os.getpid()
+    current_process = psutil.Process(current_pid)
+    
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            if proc.info['pid'] != current_pid and proc.info['name'] == 'VCF_Processor_Fast.exe':
+                return False  # Another instance found
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return True  # No other instances found
+
 if __name__ == '__main__':
+    # Check for single instance
+    if not check_single_instance():
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, "Another instance of VCF Processor is already running!\n\nPlease close the existing instance first.", "VCF Processor - Already Running", 0x10 | 0x0)
+        sys.exit(1)
+    
     initialize_log_from_xlsx()
     initial_file_path = None
     if len(sys.argv) > 1 and os.path.exists(sys.argv[1]) and not sys.argv[1].startswith('-'):
@@ -563,7 +983,7 @@ if __name__ == '__main__':
     if initial_file_path:
         print("--- Running in Headless Mode ---")
         try:
-            processor = VCFProcessor(log_file_path=LOG_FILENAME, titles_to_remove=TITLES_TO_REMOVE)
+            processor = VCFProcessor(log_file_path=LOG_PATH, titles_to_remove=TITLES_TO_REMOVE, excel_format=EXCEL_FORMAT_DEFAULT, sender_indicator=SENDER_INDICATOR_DEFAULT)
             unique_contacts, duplicate_contacts = processor.get_unique_and_duplicate_contacts(initial_file_path)
             if not duplicate_contacts:
                 print("No duplicates found. Processing unique contacts automatically.")
@@ -601,6 +1021,14 @@ if __name__ == '__main__':
         api_instance.set_window(window)
         
         def run_flask():
+            logger.info("Starting Flask server on port 5000...")
+            
+            # Check for single instance before starting
+            if not check_single_instance():
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(0, "Another instance of VCF Processor is already running!\n\nPlease close the existing instance first.", "VCF Processor - Already Running", 0x10 | 0x0)
+                sys.exit(1)
+            
             app.run(port=5000, debug=False, use_reloader=False, threaded=True)
 
         flask_thread = threading.Thread(target=run_flask)

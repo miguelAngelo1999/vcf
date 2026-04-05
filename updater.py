@@ -1,93 +1,119 @@
-import requests
-import json
-import os
+"""VCF Processor updater - checks version and downloads updates from Google Drive"""
 import sys
+import os
+import ssl
+import urllib3
+import warnings
+import requests
+import tempfile
 import subprocess
-from packaging import version
+import shutil
+import time
+from packaging.version import parse as parse_version
 
-GITHUB_REPO = "conim1989/vcf"
+# SSL bypass + proxy
+os.environ.update({
+    'PYTHONHTTPSVERIFY': '0',
+    'HTTP_PROXY': 'http://127.0.0.1:1090',
+    'HTTPS_PROXY': 'http://127.0.0.1:1090',
+})
+ssl._create_default_https_context = ssl._create_unverified_context
+urllib3.disable_warnings()
+_orig_request = requests.Session.request
+def _patched_request(self, method, url, **kwargs):
+    kwargs['verify'] = False
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return _orig_request(self, method, url, **kwargs)
+requests.Session.request = _patched_request
 
-def get_current_version():
+# --- Configuration ---
+VERSION_FILE_ID = "1MdfgUQCU_iVcJb83QOdPe8c3N1dw1ypi"
+INSTALLER_FILE_ID = "1_qbGHNQWXUhlobUbAl5t3YdD03NDrmoc"
+INSTALLER_ASSET_NAME = "VCF_Processor_Installer.exe"
+INSTALLER_PASSWORD = "123"
+
+
+def get_launcher_path():
+    if getattr(sys, 'frozen', False):
+        base_path = os.path.dirname(sys.executable)
+    else:
+        base_path = os.path.dirname(__file__)
+    return os.path.join(base_path, 'updater_launcher.exe')
+
+
+def gdrive_download(file_id, destination):
+    """Download file from Google Drive, handling large file confirmation."""
+    import re
+    session = requests.Session()
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    resp = session.get(url, stream=True, verify=False)
+
+    # If we got the warning page, extract form action and params
+    if 'text/html' in resp.headers.get('Content-Type', ''):
+        html = resp.text
+        action_match = re.search(r'action="([^"]+)"', html)
+        if action_match:
+            action = action_match.group(1).replace('&amp;', '&')
+            inputs = re.findall(r'<input[^>]*name="([^"]*)"[^>]*value="([^"]*)"', html)
+            params = {name: val for name, val in inputs}
+            resp = session.get(action, params=params, stream=True, verify=False)
+
+    with open(destination, 'wb') as f:
+        for chunk in resp.iter_content(32768):
+            if chunk:
+                f.write(chunk)
+
+
+def check_for_updates(current_version_str):
+    """Check version.txt on Google Drive for latest version."""
     try:
-        from app import APP_VERSION
-        return APP_VERSION
-    except ImportError:
-        return "2.0.0"  # Fallback
+        url = f"https://drive.google.com/uc?export=download&id={VERSION_FILE_ID}"
+        resp = requests.get(url, timeout=10, verify=False)
+        latest_version_str = resp.text.strip()
 
-def check_for_updates():
-    try:
-        current_version = get_current_version()
-        print(f"DEBUG: Current version: {current_version}")
-        
-        response = requests.get(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest")
-        print(f"DEBUG: API response status: {response.status_code}")
-        
-        if response.status_code == 200:
-            latest_release = response.json()
-            latest_version = latest_release["tag_name"].lstrip("v")
-            print(f"DEBUG: Latest version: {latest_version}")
-            print(f"DEBUG: Assets count: {len(latest_release['assets'])}")
-            
-            version_comparison = version.parse(latest_version) > version.parse(current_version)
-            print(f"DEBUG: Version comparison ({latest_version} > {current_version}): {version_comparison}")
-            
-            if version_comparison:
-                if latest_release["assets"]:
-                    print(f"DEBUG: Update available, returning data")
-                    return {
-                        "update_available": True,
-                        "version": latest_version,
-                        "download_url": latest_release["assets"][0]["browser_download_url"],
-                        "changelog": latest_release["body"]
-                    }
-                else:
-                    print(f"DEBUG: No assets found")
-            else:
-                print(f"DEBUG: No update needed")
-        else:
-            print(f"DEBUG: API request failed with status {response.status_code}")
+        current_v = parse_version(current_version_str)
+        latest_v = parse_version(latest_version_str)
+
+        if latest_v > current_v:
+            return {
+                "update_available": True,
+                "latest_version": latest_version_str,
+                "download_url": f"gdrive:{INSTALLER_FILE_ID}",
+            }
+        return {"update_available": False, "message": "You have the latest version"}
     except Exception as e:
-        print(f"Update check failed: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    print(f"DEBUG: Returning no update available")
-    return {"update_available": False}
+        return {"update_available": False, "error": f"Update check failed: {e}"}
 
-def download_and_install_update(download_url):
+
+def download_and_run_installer(download_url, update_type='exe', password=''):
+    """Download installer from Google Drive and launch updater_launcher."""
     try:
-        # Get current exe directory
-        if getattr(sys, 'frozen', False):
-            current_dir = os.path.dirname(sys.executable)
+        if download_url.startswith('gdrive:'):
+            file_id = download_url.replace('gdrive:', '')
         else:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        print(f"DEBUG: Current directory: {current_dir}")
-        
-        # Download update
-        response = requests.get(download_url)
-        update_file = os.path.join(current_dir, "update.zip")
-        
-        with open(update_file, "wb") as f:
-            f.write(response.content)
-        
-        print(f"DEBUG: Downloaded to: {update_file}")
-        
-        # Extract to current directory
-        import zipfile
-        with zipfile.ZipFile(update_file, 'r') as zip_ref:
-            zip_ref.extractall(current_dir)
-        
-        print(f"DEBUG: Extracted to: {current_dir}")
-        
-        # Clean up
-        os.remove(update_file)
-        
-        print("Update installed successfully. Please restart the application.")
-        return True
-        
+            return {"success": False, "error": "Invalid download URL format"}
+
+        temp_dir = tempfile.gettempdir()
+        installer_path = os.path.join(temp_dir, INSTALLER_ASSET_NAME)
+        gdrive_download(file_id, installer_path)
+
+        if not os.path.exists(installer_path):
+            return {"success": False, "error": "Failed to download installer"}
+
+        original_launcher_path = get_launcher_path()
+        if not os.path.exists(original_launcher_path):
+            return {"success": False, "error": "updater_launcher.exe is missing."}
+
+        temp_launcher_path = os.path.join(temp_dir, f"launcher_{int(time.time())}.exe")
+        shutil.copy(original_launcher_path, temp_launcher_path)
+
+        subprocess.Popen(
+            [temp_launcher_path, installer_path, str(os.getpid())],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            close_fds=True
+        )
+
+        return {"success": True, "message": "Update process initiated. This app will now close."}
     except Exception as e:
-        print(f"Update failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+        return {"success": False, "error": f"Failed to download or run installer: {e}"}

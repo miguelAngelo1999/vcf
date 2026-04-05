@@ -106,6 +106,27 @@
                     <button id="mode-text-btn" class="mode-btn active">Processar Lista de Texto</button>
                 </div>
 
+                <!-- Excel Format Controls - Main Page -->
+                <div id="excel-format-main" style="margin: 1.25rem 0; padding: 0.9375rem; border: 1px solid var(--border-color); border-radius: 0.3125rem; background: var(--container-bg);">
+                    <h4 style="margin: 0 0 0.625rem 0; color: var(--2-color); font-family: Cambria, Cochin, Georgia, Times, 'Times New Roman', serif;">Formato de Saída Excel</h4>
+                    <div style="display: flex; gap: 1.25rem; align-items: center; flex-wrap: wrap;">
+                        <div id="excel-format-selector-main">
+                            <label style="display: inline-flex; align-items: center; margin-right: 1.25rem;">
+                                <input type="radio" name="excel_format" value="standard" checked style="margin-right: 0.5rem;">
+                                <span style="color: var(--text-color); font-family: Cambria, Cochin, Georgia, Times, 'Times New Roman', serif;">Padrão (Number, Name)</span>
+                            </label>
+                            <label style="display: inline-flex; align-items: center;">
+                                <input type="radio" name="excel_format" value="novo_programa" style="margin-right: 0.5rem;">
+                                <span style="color: #4A90E2; font-family: Cambria, Cochin, Georgia, Times, 'Times New Roman', serif;">Novo Programa (Primeiro nome, Sobrenome, Telefone)</span>
+                            </label>
+                        </div>
+                        <div id="sender-indicator-main" style="display: none;">
+                            <label style="color: var(--gold-color); font-family: Cambria, Cochin, Georgia, Times, 'Times New Roman', serif; margin-right: 0.5rem;">Quem Enviou:</label>
+                            <input type="text" id="sender-indicator-input-main" placeholder="Contato Recebido" class="input-style" style="width: 200px;">
+                        </div>
+                    </div>
+                </div>
+
                 <div id="initial-form">
                     <div id="file-input-section" style="display: none;">
                         <div class="input-field">
@@ -141,6 +162,18 @@
                 </div>
             </div>
             <div id="log-area" style="display: none; height: 5.625rem; /* 90px */"></div>
+            <style>
+                #log-area .output-link {
+                    color: #4A90E2;
+                    text-decoration: underline;
+                    cursor: pointer;
+                    font-weight: bold;
+                }
+                #log-area .output-link:hover {
+                    color: #357ABD;
+                    text-decoration: none;
+                }
+            </style>
         </div>
 
         <div id="advanced-panel">
@@ -167,6 +200,25 @@
                     </div>
                 </div>
                 <hr>
+                <div id="excel-format-manager" style="margin-top: 1.25rem;">
+                    <h4 class="h4">Formato Excel</h4>
+                    <p style="color: var(--gold-color); font-family: Cambria, Cochin, Georgia, Times, 'Times New Roman', serif;">Selecione o formato de saída do Excel.</p>
+                    <div id="excel-format-selector">
+                        <label style="display: block; margin-bottom: 0.5rem;">
+                            <input type="radio" name="excel_format" value="standard" checked>
+                            <span style="color: var(--text-color); font-family: Cambria, Cochin, Georgia, Times, 'Times New Roman', serif;">Padrão (Number, Name)</span>
+                        </label>
+                        <label style="display: block; margin-bottom: 0.5rem;">
+                            <input type="radio" name="excel_format" value="novo_programa">
+                            <span style="color: #4A90E2; font-family: Cambria, Cochin, Georgia, Times, 'Times New Roman', serif;">Novo Programa (Primeiro nome, Sobrenome, Telefone)</span>
+                        </label>
+                    </div>
+                    <div id="sender-indicator-field" style="margin-top: 0.625rem; display: none;">
+                        <label style="color: var(--gold-color); font-family: Cambria, Cochin, Georgia, Times, 'Times New Roman', serif;">Indicador de Quem Enviou:</label>
+                        <input type="text" id="sender-indicator-input" placeholder="Contato Recebido" class="input-style-adv" style="width: 100%; margin-top: 0.3125rem;">
+                    </div>
+                </div>
+                <hr>
                 <div id="log-manager" style="margin-top: 1.25rem;">
                     <h4 class="h4">Lista de Números Processados</h4>
                     <div id="view-log-file" class="button-container-adv">
@@ -180,6 +232,11 @@
                         <button type="button" id="check-updates-btn" class="button-adv">Verificar Atualizações</button>
                     </div>
                     <div id="update-status" style="margin-top: 0.625rem; color: var(--gold-color); font-size: 0.9em;"></div>
+                </div>
+                <!-- NEW: Version display area -->
+                <hr>
+                <div id="app-version-container" style="margin-top: 1.25rem; text-align: center; font-size: 0.8em; color: var(--gold-color);">
+                    <span id="app-version-display">Carregando versão...</span>
                 </div>
             </div>
         </div>
@@ -225,6 +282,54 @@
             body: JSON.stringify({ lightMode })
         });
     });
+
+    document.querySelectorAll('input[name="excel_format"]').forEach(radio => {
+        radio.addEventListener('change', () => {
+            const excelFormat = document.querySelector('input[name="excel_format"]:checked').value;
+            
+            // Update both main and advanced sender fields
+            const senderFieldMain = document.getElementById('sender-indicator-main');
+            const senderFieldAdv = document.getElementById('sender-indicator-field');
+            
+            // Show/hide sender indicator field based on format
+            if (excelFormat === 'novo_programa') {
+                senderFieldMain.style.display = 'flex';
+                senderFieldAdv.style.display = 'block';
+            } else {
+                senderFieldMain.style.display = 'none';
+                senderFieldAdv.style.display = 'none';
+            }
+            
+            fetch('/save_excel_format', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ excelFormat })
+            });
+        });
+    });
+
+    // Handle sender indicator input changes for both main and advanced
+    const setupSenderIndicator = (inputId) => {
+        const input = document.getElementById(inputId);
+        if (input) {
+            input.addEventListener('input', () => {
+                const senderIndicator = input.value.trim() || 'Contato Recebido';
+                
+                // Sync both inputs
+                document.getElementById('sender-indicator-input-main').value = senderIndicator;
+                document.getElementById('sender-indicator-input').value = senderIndicator;
+                
+                fetch('/save_sender_indicator', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ senderIndicator })
+                });
+            });
+        }
+    };
+    
+    setupSenderIndicator('sender-indicator-input-main');
+    setupSenderIndicator('sender-indicator-input');
 
     function setupAnimatedElements() {
         elementsToAnimate.forEach(el => el.classList.remove('gpu-accelerate'));
@@ -408,9 +513,14 @@
         setState({ isProcessing: true, duplicates: [], logMessages: [] }); // Clear duplicates, start processing state, clear logs
         logMessage(`Continuando com ${selected_duplicates.length} duplicatas selecionadas...`);
         try {
+            // Get sender name from GUI
+            const senderNameInput = document.getElementById('sender-indicator-input-main') || 
+                                   document.getElementById('sender-indicator-input');
+            const senderName = senderNameInput ? senderNameInput.value.trim() || 'Contato Recebido' : 'Contato Recebido';
+            
             const response = await fetch('/reprocess_selected', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ selected_to_reprocess: selected_duplicates })
+                body: JSON.stringify({ selected_to_reprocess: selected_duplicates, senderName: senderName })
             });
             const data = await response.json();
             if (response.ok) {
@@ -421,6 +531,12 @@
                     logMessage(`<strong>${data.message}</strong> Nenhum arquivo de saída foi criado.`);
                     showErrorShake();
                 }
+                
+                // Clear batch files if we were in batch mode
+                if (state.batchMode) {
+                    batchVcfFiles = [];
+                    updateVcfFileList();
+                }
             } else {
                 throw new Error(data.error || 'An unknown server error occurred.');
             }
@@ -428,7 +544,12 @@
              logMessage(`Erro: ${error.message}`); // Log error via state
              showErrorShake();
         } finally {
-             setState({ isProcessing: false, duplicates: [] }); // End processing, clear duplicates
+             setState({ 
+                 isProcessing: false, 
+                 duplicates: [], 
+                 batchMode: false,
+                 vcfPath: '' 
+             }); // End processing, clear duplicates and batch mode
         }
     }
 
@@ -449,6 +570,104 @@
         // No need for separate optimization - handled in render function
     }
 
+    // Batch VCF handling
+    let batchVcfFiles = [];
+
+    function handleBatchVcfFiles(files) {
+        batchVcfFiles = files;
+        updateVcfFileList();
+        
+        // Don't auto-process single files anymore - wait for user to click process button
+        logMessage(`${files.length} arquivo(s) VCF selecionado(s). Clique em 'Processar Arquivos' para continuar.`);
+        
+        // Update the state to show batch files but don't process yet
+        setState({ 
+            vcfPath: files.length === 1 ? (files[0].path || files[0].name) : `${files.length} arquivos VCF selecionados`,
+            isLoading: false,
+            isProcessing: false
+        });
+    }
+
+    function updateVcfFileList() {
+        const vcfPath = document.getElementById('vcf-path');
+        if (batchVcfFiles.length === 1) {
+            vcfPath.value = batchVcfFiles[0].path || batchVcfFiles[0].name;
+        } else if (batchVcfFiles.length > 1) {
+            vcfPath.value = `${batchVcfFiles.length} arquivos VCF selecionados`;
+        }
+    }
+
+    // Function to handle batch VCF processing
+    async function handleBatchVcfProcessing() {
+        if (batchVcfFiles.length === 0) {
+            logMessage("Nenhum arquivo VCF selecionado.");
+            return;
+        }
+
+        setState({ isLoading: true, logMessages: [] });
+        
+        try {
+            // Get file paths from the batch files
+            const vcfPaths = batchVcfFiles.map(file => file.path || file.name).filter(path => path);
+            
+
+            const senderNameInput = document.getElementById('sender-indicator-input-main') || 
+                                   document.getElementById('sender-indicator-input');
+            const senderName = senderNameInput ? senderNameInput.value.trim() || 'Contato Recebido' : 'Contato Recebido';
+            
+            if (vcfPaths.length === 0) {
+                throw new Error("Não foi possível obter os caminhos dos arquivos VCF.");
+            }
+
+            logMessage(`Processando ${vcfPaths.length} arquivo(s) VCF em lote...`);
+
+            const response = await fetch('/start_batch_processing', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    vcf_paths: vcfPaths,
+                    senderName: senderName
+                })
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                // Handle auto-processed batch when no duplicates found
+                if (data.output_file && data.output_file !== "None") {
+                    logMessage(`<strong>${data.message || 'Batch processing complete!'}</strong> Arquivo de saída: <a href="#" class="output-link" data-path="${data.output_file}">${data.output_file}</a>`);
+                    showSuccessFlash();
+                    setState({ isLoading: false, isProcessing: false, duplicates: [], vcfPath: '', error: null });
+                    batchVcfFiles = []; // Clear batch files
+                    updateVcfFileList();
+                } else if (data.duplicates && data.duplicates.length > 0) {
+                    // Store batch info for later processing
+                    setState({ 
+                        isLoading: false, 
+                        isProcessing: false, // Set to false to allow duplicate selector to show
+                        batchMode: true,
+                        uniqueContacts: data.unique_contacts || []
+                    });
+                    showDuplicateSelector(data.duplicates);
+                    updateSubmitButtonText();
+                } else {
+                    logMessage("Nenhuma duplicata encontrada. Processamento em lote concluído.");
+                    showSuccessFlash();
+                    setState({ isLoading: false, isProcessing: false, duplicates: [], vcfPath: '', error: null });
+                    batchVcfFiles = []; // Clear batch files
+                    updateVcfFileList();
+                }
+            } else {
+                throw new Error(data.error || 'An unknown server error occurred.');
+            }
+
+        } catch (error) {
+            logMessage(`Erro ao processar arquivos em lote: ${error.message}`);
+            showErrorShake();
+            setState({ isLoading: false });
+        }
+    }
+
     // Define the new function to handle dropped or selected VCF paths
     async function handleVcfPathReady(vcfPath) {
          if (!vcfPath) {
@@ -463,10 +682,18 @@
         logMessage(`Processando arquivo VCF: ${vcfPath}...`);
 
         try {
+            // Get sender name from GUI
+            const senderNameInput = document.getElementById('sender-indicator-input-main') || 
+                                   document.getElementById('sender-indicator-input');
+            const senderName = senderNameInput ? senderNameInput.value.trim() || 'Contato Recebido' : 'Contato Recebido';
+            
+            // Get excel format from GUI
+            const excelFormat = document.querySelector('input[name="excel_format"]:checked').value;
+            
             const response = await fetch('/process_dropped_vcf', { // Use the dedicated dropped/selected route
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ vcf_path: vcfPath })
+                body: JSON.stringify({ vcf_path: vcfPath, senderName: senderName, excelFormat: excelFormat })
             });
 
             const data = await response.json();
@@ -479,7 +706,7 @@
                     setState({ isLoading: false, isProcessing: false, duplicates: [], vcfPath: '', error: null });
                 } else if (data.duplicates && data.duplicates.length > 0) {
                     showDuplicateSelector(data.duplicates);
-                    setState({ isLoading: false });
+                    setState({ isLoading: false, isProcessing: false }); // Set isProcessing to false to allow duplicate selector to show
                     updateSubmitButtonText();
                 } else {
                     logMessage("Nenhuma duplicata encontrada. Processamento concluído.");
@@ -540,6 +767,10 @@
                 submitButton.textContent = 'Pular';
                 submitButton.disabled = state.isLoading || state.isProcessing; // Disable if loading/processing
             }
+        } else if (batchVcfFiles.length > 0 && !state.isProcessing) {
+            // Enable submit button when we have batch VCF files
+            submitButton.textContent = batchVcfFiles.length === 1 ? 'Processar Arquivo' : 'Processar Arquivos';
+            submitButton.disabled = state.isLoading || state.isProcessing;
         } else {
              submitButton.textContent = 'Processar'; // Default text when not in duplicate selection
              submitButton.disabled = true; // Disabled when not in duplicate selection
@@ -653,6 +884,32 @@
                 updateLightPosition();
             });
 
+        fetch('/get_excel_format')
+            .then(response => response.json())
+            .then(data => {
+                const excelFormat = data.excelFormat || 'standard';
+                document.querySelector(`input[name="excel_format"][value="${excelFormat}"]`).checked = true;
+                
+                // Show/hide sender fields based on format
+                const senderFieldMain = document.getElementById('sender-indicator-main');
+                const senderFieldAdv = document.getElementById('sender-indicator-field');
+                if (excelFormat === 'novo_programa') {
+                    senderFieldMain.style.display = 'flex';
+                    senderFieldAdv.style.display = 'block';
+                } else {
+                    senderFieldMain.style.display = 'none';
+                    senderFieldAdv.style.display = 'none';
+                }
+            });
+
+        fetch('/get_sender_indicator')
+            .then(response => response.json())
+            .then(data => {
+                const senderIndicator = data.senderIndicator || 'Contato Recebido';
+                document.getElementById('sender-indicator-input-main').value = senderIndicator;
+                document.getElementById('sender-indicator-input').value = senderIndicator;
+            });
+
         fetchAndDisplayTitles();
         setupAnimatedElements();
         // Initial render call - this will set the initial state based on Flask template values
@@ -671,9 +928,17 @@
                 e.preventDefault();
                 const files = e.dataTransfer.files;
                 if (files.length > 0) {
-                    const file = files[0];
-                    if (file.name.toLowerCase().endsWith('.vcf')) {
-                        handleVcfPathReady(file.path || file.name);
+                    // Check if any file is a VCF
+                    const vcfFiles = Array.from(files).filter(file => file.name.toLowerCase().endsWith('.vcf'));
+                    if (vcfFiles.length > 0) {
+                        // Auto-switch to VCF mode
+                        modeFileBtn.classList.add('active');
+                        modeTextBtn.classList.remove('active');
+                        fileInputSection.style.display = 'block';
+                        textInputSection.style.display = 'none';
+                        
+                        // Handle batch VCF files
+                        handleBatchVcfFiles(vcfFiles);
                     }
                 }
             }
@@ -695,6 +960,8 @@
 
         // Add event listener for changes to the vcf-path input field
         vcfPathInput.addEventListener('input', (e) => {
+            // Clear batch files when user manually enters a path
+            batchVcfFiles = [];
             // Update the state when the input value changes
             setState({ vcfPath: e.target.value });
         });
@@ -879,6 +1146,12 @@
         submitButton.addEventListener('click', async (e) => {
             e.preventDefault(); // Prevent any default behavior
 
+            // If we have batch VCF files and no duplicates, process them as batch
+            if (batchVcfFiles.length > 0 && state.duplicates.length === 0) {
+                await handleBatchVcfProcessing();
+                return;
+            }
+
             const checkedCheckboxes = duplicatesList.querySelectorAll('input[type="checkbox"]:checked');
 
             if (checkedCheckboxes.length > 0) {
@@ -895,14 +1168,26 @@
         });
 
         browseVcfBtn.addEventListener('click', async () => {
-            const path = await window.pywebview.api.select_file();
-            if (path) { // path is a string or None
-                 // Call handleVcfPathReady to unify the processing logic for dropped and selected files.
-                 handleVcfPathReady(path);
+            const paths = await window.pywebview.api.select_file();
+            if (paths && paths.length > 0) {
+                // Convert paths to file objects for batch handling
+                const vcfFiles = paths.map(path => ({
+                    name: path.split(/[/\\]/).pop(),
+                    path: path
+                }));
+                
+                // Auto-switch to VCF mode if not already
+                modeFileBtn.classList.add('active');
+                modeTextBtn.classList.remove('active');
+                fileInputSection.style.display = 'block';
+                textInputSection.style.display = 'none';
+                
+                // Handle batch VCF files
+                handleBatchVcfFiles(vcfFiles);
             } else {
                 // If file selection was cancelled, clear the input and state
-                 vcfPathInput.value = ''; // Clear input field
-                 setState({ vcfPath: '' }); // Update state to reflect cleared input
+                vcfPathInput.value = ''; // Clear input field
+                setState({ vcfPath: '' }); // Update state to reflect cleared input
             }
         });
 
@@ -921,12 +1206,57 @@
         }
 
         startBtn.addEventListener('click', async () => {
-            if (!state.vcfPath) {
+            if (!state.vcfPath && batchVcfFiles.length === 0) {
                  logMessage("Erro: Por favor, selecione um arquivo VCF primeiro.");
                  return;
             }
-            // Call handleVcfPathReady to unify the processing logic
-            handleVcfPathReady(state.vcfPath);
+            
+            // Check if we have batch files to process
+            if (batchVcfFiles.length > 1) {
+                // Get sender name from GUI
+                const senderNameInput = document.getElementById('sender-indicator-input-main') || 
+                                       document.getElementById('sender-indicator-input');
+                const senderName = senderNameInput ? senderNameInput.value.trim() || 'Contato Recebido' : 'Contato Recebido';
+                
+                // Process batch
+                const vcfPaths = batchVcfFiles.map(file => file.path);
+                setState({ isLoading: true, isProcessing: true });
+                
+                try {
+                    const response = await fetch('/start_batch_processing', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                    vcf_paths: vcfPaths,
+                    senderName: senderName
+                })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (!response.ok) {
+                        throw new Error(result.error || 'Erro no processamento batch');
+                    }
+                    
+                    logMessage(result.message);
+                    
+                    if (result.duplicates && result.duplicates.length > 0) {
+                        showDuplicateSelector(result.duplicates);
+                    } else {
+                        setState({ isLoading: false, isProcessing: false, vcfPath: '' });
+                        if (result.output_file && result.output_file !== "None") {
+                            logMessage(`✅ Arquivo gerado: ${result.output_file}`);
+                        }
+                    }
+                } catch (error) {
+                    logMessage(`❌ Erro: ${error.message}`);
+                    setState({ isLoading: false, isProcessing: false });
+                }
+            } else {
+                // Single file processing
+                const filePath = batchVcfFiles.length === 1 ? batchVcfFiles[0].path : state.vcfPath;
+                handleVcfPathReady(filePath);
+            }
         });
 
         // <<< THIS IS THE CORRECTED AND COMPLETE EVENT LISTENER >>>
@@ -973,40 +1303,134 @@
         viewLogBtn.addEventListener('click', async () => {
             window.pywebview.api.open_log_file_with_notepad();
         });
-
-        // Check for updates
+        // ===================================================================
+        // <<< MODIFIED SECTION START >>>
+        // This entire 'checkUpdatesBtn' block has been updated.
+        // ===================================================================
         if (checkUpdatesBtn) {
             checkUpdatesBtn.addEventListener('click', async () => {
-            checkUpdatesBtn.disabled = true;
-            checkUpdatesBtn.textContent = 'Verificando...';
-            updateStatus.textContent = '';
+                checkUpdatesBtn.disabled = true;
+                checkUpdatesBtn.textContent = 'Verificando...';
+                updateStatus.textContent = ''; // Clear previous status
 
-            try {
-                const response = await fetch('/check_updates');
-                const data = await response.json();
+                try {
+                    const response = await fetch('/check_updates');
+                    const data = await response.json();
 
-                if (data.update_available) {
-                    updateStatus.innerHTML = `Nova versão ${data.version} disponível!<br><a href="#" onclick="window.pywebview.api.open_file_path('${data.download_url}')">Baixar Atualização</a>`;
-                } else {
-                    updateStatus.textContent = 'Você está usando a versão mais recente.';
+                    if (data.update_available) {
+                        // FIX 1: Corrected `data.version` to `data.latest_version` to fix the "undefined" bug.
+                        // FIX 2: Created a real button instead of a link to trigger the backend installation process.
+                        updateStatus.innerHTML = `Nova versão ${data.latest_version} disponível!<br>
+                            <button 
+                                id="download-update-btn" 
+                                class="button-adv" 
+                                style="margin-top: 5px;" 
+                                data-url="${data.download_url}"
+                                data-update_type="${data.update_type || 'exe'}"
+                                data-password="${data.password || ''}">
+                                Baixar e Instalar
+                            </button>`;
+                    } else if (data.error) {
+                        updateStatus.textContent = `Erro: ${data.error}`;
+                    } 
+                    else {
+                        updateStatus.textContent = 'Você está usando a versão mais recente.';
+                    }
+                } catch (error) {
+                    console.error("Update check failed:", error);
+                    updateStatus.textContent = 'Erro ao verificar atualizações.';
+                } finally {
+                    checkUpdatesBtn.disabled = false;
+                    checkUpdatesBtn.textContent = 'Verificar Atualizações';
                 }
-            } catch (error) {
-                updateStatus.textContent = 'Erro ao verificar atualizações.';
-            } finally {
-                checkUpdatesBtn.disabled = false;
-                checkUpdatesBtn.textContent = 'Verificar Atualizações';
-            }
             });
         }
+
+        // ===================================================================
+        // <<< NEW SECTION START >>>
+        // Add an event listener to the document body to handle clicks on the dynamically created update button.
+        // This is called "event delegation".
+        // ===================================================================
+        document.body.addEventListener('click', async (event) => {
+            if (event.target.id === 'download-update-btn') {
+                const downloadBtn = event.target;
+                const downloadUrl = downloadBtn.dataset.url;
+                const updateType = downloadBtn.dataset.update_type || 'exe';
+                const password = downloadBtn.dataset.password || '';
+
+                if (!downloadUrl) {
+                    updateStatus.innerHTML += '<br><span style="color: red;">URL de download não encontrada.</span>';
+                    return;
+                }
+
+                // Disable button and provide feedback to the user
+                downloadBtn.disabled = true;
+                downloadBtn.textContent = 'Baixando...';
+                
+                try {
+                    // Call the backend endpoint responsible for downloading and running the installer
+                    const response = await fetch('/download_update', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ 
+                            download_url: downloadUrl,
+                            update_type: updateType,
+                            password: password
+                        }),
+                    });
+
+                    const result = await response.json();
+
+                    if (result.success) {
+                        // The backend has launched the installer and will shut down.
+                        // Inform the user.
+                        downloadBtn.textContent = 'Instalando...';
+                        updateStatus.innerHTML = `Instalando... O aplicativo será fechado.`;
+                    } else {
+                        // The backend reported an error
+                        throw new Error(result.error || 'Falha ao iniciar a atualização.');
+                    }
+                } catch (error) {
+                    console.error("Update process failed:", error);
+                    updateStatus.innerHTML = `Nova versão ${downloadBtn.dataset.version} disponível!<br><span style="color: red;">Erro: ${error.message}</span>`;
+                    // Re-enable the button on failure
+                    downloadBtn.disabled = false;
+                    downloadBtn.textContent = 'Tentar Novamente';
+                }
+            }
+        });
 
         // Event Delegation for log output links
         logArea.addEventListener('click', (e) => {
             if (e.target.classList.contains('output-link')) {
                 e.preventDefault();
-                const filePath = e.target.dataset.path;
-                // Call the new Python API function to open the file
-                window.pywebview.api.open_file_path(filePath);
+                let filePath = e.target.dataset.path;
                 console.log(`Opening file: ${filePath}`);
+                
+                // Convert Windows path back to forward slashes for processing
+                if (filePath.includes('\\')) {
+                    filePath = filePath.replace(/\\/g, '/');
+                }
+                
+                // Convert relative path to absolute path
+                if (filePath.startsWith('~/Documents/')) {
+                    // Replace ~ with user's Documents folder
+                    filePath = filePath.replace('~/Documents/', '');
+                    // For Windows, we need to construct the full path
+                    // The backend will handle the conversion
+                }
+                
+                // Try to open file using pywebview API
+                if (window.pywebview && window.pywebview.api && window.pywebview.api.open_file_path) {
+                    window.pywebview.api.open_file_path(filePath);
+                    console.log('File opened via pywebview API');
+                } else {
+                    // Fallback: show alert with file path
+                    console.error('PyWebView API not available');
+                    alert(`Arquivo criado em:\n${filePath}\n\nAbra manualmente o arquivo Excel.`);
+                }
             }
         });
 
@@ -1160,6 +1584,19 @@
         }
         // If no initial path or duplicates, the form remains in its initial state.
 
+    });
+
+    // NEW: This event fires after the Python backend is fully initialized and ready for API calls.
+    window.addEventListener('pywebviewready', () => {
+        // Fetch and display the application version
+        if (window.pywebview && window.pywebview.api.get_app_version) {
+            pywebview.api.get_app_version().then(function(version) {
+                const versionDisplay = document.getElementById('app-version-display');
+                if (versionDisplay) {
+                    versionDisplay.textContent = 'Versão: ' + version;
+                }
+            });
+        }
     });
 </script>
 </body>
