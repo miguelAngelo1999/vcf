@@ -30,7 +30,7 @@ if sys.platform == 'win32':
 
 
 # Version for update checking
-APP_VERSION = "2.9.35"
+APP_VERSION = "2.9.42"
 
 # CRITICAL FIX: Set working directory to exe location
 if getattr(sys, 'frozen', False):
@@ -707,107 +707,63 @@ def process_dropped_vcf():
 
 @app.route('/start_batch_processing', methods=['POST'])
 def start_batch_processing():
-    logger.info("=== START BATCH PROCESSING REQUEST ===")
     try:
         data = request.get_json()
-        logger.info(f"Request data: {data}")
         vcf_paths = data.get('vcf_paths', [])
-        sender_name = data.get('senderName', 'Contato Recebido')  # Get sender name from GUI
-        logger.info(f"VCF paths: {vcf_paths}")
-        logger.info(f"Sender name: {sender_name}")
-        
+        sender_name = data.get('senderName', 'Contato Recebido')
+        excel_format = data.get('excelFormat')
+
         if not vcf_paths:
-            logger.error("No VCF files provided")
             return jsonify({"error": "Nenhum arquivo VCF fornecido."}), 400
-        
-        global TITLES_TO_REMOVE
-        _, EXCEL_FORMAT_DEFAULT, SENDER_INDICATOR_DEFAULT, TITLES_TO_REMOVE = read_config_ini()
-        processor = VCFProcessor(log_file_path=LOG_PATH, titles_to_remove=TITLES_TO_REMOVE, excel_format=EXCEL_FORMAT_DEFAULT, sender_indicator=SENDER_INDICATOR_DEFAULT)
-        
-        # Update processor with sender name from GUI
-        processor.update_sender_name(sender_name)
-        
-        all_unique_contacts = []
-        all_duplicate_contacts = []
-        
-        # Process each VCF file
-        for i, vcf_path in enumerate(vcf_paths):
+
+        # Concatenate all VCF files into one temp file
+        import tempfile
+        combined_content = ""
+        for vcf_path in vcf_paths:
             if os.path.isfile(vcf_path):
-                logging.info(f"Processing batch file {i+1}/{len(vcf_paths)}: {vcf_path}")
-                unique_contacts, duplicate_contacts = processor.get_unique_and_duplicate_contacts(vcf_path)
-                all_unique_contacts.extend(unique_contacts)
-                all_duplicate_contacts.extend(duplicate_contacts)
-                logging.info(f"Processed {len(unique_contacts)} unique, {len(duplicate_contacts)} duplicates from file {i+1}")
-        
-        # Remove duplicates from combined unique contacts (in case same number appears in different files)
-        # But preserve already processed contacts as duplicates
-        seen_numbers = set()
-        filtered_unique_contacts = []
-        already_processed_contacts = []
-        
-        for contact in all_unique_contacts:
-            if contact['cleaned_number'] not in seen_numbers:
-                seen_numbers.add(contact['cleaned_number'])
-                # Check if this contact was already processed
-                if contact['cleaned_number'] in processor.processed_numbers_log:
-                    already_processed_contacts.append(contact)
-                else:
-                    filtered_unique_contacts.append(contact)
-        
-        # Add already processed contacts to duplicates list
-        all_duplicate_contacts.extend(already_processed_contacts)
-        
-        logging.info(f"Batch summary: {len(filtered_unique_contacts)} final unique contacts, {len(all_duplicate_contacts)} duplicates, {len(already_processed_contacts)} already processed")
-        
-        # Check if we have any duplicates (same logic as single file processing)
-        if not all_duplicate_contacts:
-            # No duplicates found - process all unique contacts
-            logging.info("Nenhuma duplicata encontrada no batch. Processando contatos únicos automaticamente.")
-            output_dir = os.path.expanduser("~/Documents")
-            base_name = "Contatos_Batch_Processados"
-            output_file = processor.process_and_save(filtered_unique_contacts, output_dir, base_name)
-            
-            # Convert to relative path for display with Windows backslashes
-            if output_file:
-                docs_path = os.path.expanduser("~/Documents")
-                if output_file.startswith(docs_path):
-                    relative_path = os.path.relpath(output_file, docs_path)
-                    display_path = f"~\\Documents\\{relative_path.replace('/', '\\')}"
-                else:
-                    display_path = output_file.replace('/', '\\')
-            else:
-                display_path = "None"
-                
-            return jsonify({
-                "message": f"Processamento batch concluído. {len(filtered_unique_contacts)} contatos únicos de {len(vcf_paths)} arquivos.",
-                "output_file": display_path,
-                "duplicates": []
-            })
-        else:
-            # Has duplicates - show selection UI (same as single file)
-            with session_lock:
-                session_data['processor'] = processor
-                session_data['batch_vcf_paths'] = vcf_paths
-                session_data['unique_contacts'] = filtered_unique_contacts
-                session_data.pop('output_base_name', None)
-            
-            # Even if filtered_unique_contacts is empty, we still show the duplicate selector
-            # The user can choose which duplicates to process
-            logging.info(f"Returning {len(all_duplicate_contacts)} duplicates to frontend")
-            if all_duplicate_contacts:
-                sample_duplicate = all_duplicate_contacts[0]
-                logging.info(f"Sample duplicate structure: {sample_duplicate}")
-            
-            response_data = {
-                "message": f"Encontradas {len(all_duplicate_contacts)} duplicatas no batch de {len(vcf_paths)} arquivos.",
-                "duplicates": all_duplicate_contacts,
-                "unique_contacts": filtered_unique_contacts  # May be empty if all are duplicates
-                # NO output_file when there are duplicates - this forces frontend to show duplicate selector
-            }
-            logging.info(f"Full response to frontend: {response_data}")
-            
-            return jsonify(response_data)
-            
+                with open(vcf_path, 'r', encoding='utf-8', errors='replace') as f:
+                    combined_content += f.read() + "\n"
+
+        if not combined_content.strip():
+            return jsonify({"error": "Nenhum conteúdo VCF válido encontrado."}), 400
+
+        tmp = tempfile.NamedTemporaryFile(suffix='.vcf', delete=False, mode='w', encoding='utf-8')
+        tmp.write(combined_content)
+        tmp.close()
+
+        # Use same logic as single file, output to same dir as first file
+        result = process_vcf_file_logic(tmp.name, sender_name, excel_format)
+
+        # Fix output path to point to first file's directory
+        try:
+            result_data = result.get_json()
+            if result_data.get('output_file') and result_data['output_file'] != 'None':
+                output_dir = os.path.dirname(os.path.abspath(vcf_paths[0]))
+                base_name = "Batch_Processados"
+                global TITLES_TO_REMOVE
+                _, EXCEL_FORMAT_DEFAULT, SENDER_INDICATOR_DEFAULT, TITLES_TO_REMOVE = read_config_ini()
+                actual_excel_format = excel_format if excel_format else EXCEL_FORMAT_DEFAULT
+                processor = VCFProcessor(log_file_path=LOG_PATH, titles_to_remove=TITLES_TO_REMOVE, excel_format=actual_excel_format, sender_indicator=SENDER_INDICATOR_DEFAULT)
+                if sender_name:
+                    processor.update_sender_name(sender_name)
+                # Re-read session unique contacts and save to correct location
+                with session_lock:
+                    unique_contacts = session_data.get('unique_contacts', [])
+                if unique_contacts:
+                    output_file = processor.process_and_save(unique_contacts, output_dir, base_name)
+                    result_data['output_file'] = output_file or 'None'
+                    return jsonify(result_data)
+        except Exception:
+            pass
+
+        # Also store batch paths in session for reprocess_selected
+        with session_lock:
+            session_data['batch_vcf_paths'] = vcf_paths
+            session_data.pop('vcf_path', None)
+
+        os.unlink(tmp.name)
+        return result
+
     except Exception as e:
         logger.error(f"Error in batch processing: {e}")
         return jsonify({"error": str(e)}), 500
@@ -911,10 +867,8 @@ def reprocess_selected():
             output_dir = os.path.dirname(abs_path)
             base_name = os.path.splitext(os.path.basename(abs_path))[0]
         elif batch_vcf_paths:
-            # Handle batch mode with timestamped output
             output_dir = os.path.dirname(os.path.abspath(batch_vcf_paths[0]))
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            base_name = f"Batch_Processed_{timestamp}"
+            base_name = "Batch_Processados"
         else:
             output_dir = os.path.expanduser("~/Documents")
             base_name = output_base_name

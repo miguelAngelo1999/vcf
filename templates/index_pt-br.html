@@ -259,6 +259,7 @@
         duplicates: [],
         filteredTitles: [],
         logMessages: [],
+        selectedDuplicates: new Set(),
         error: null
     };
 
@@ -456,7 +457,11 @@
 
     // --- State Management ---
     function setState(newState) {
+        const prevSelectedDuplicates = state.selectedDuplicates;
         state = { ...state, ...newState };
+        if (!newState.hasOwnProperty('selectedDuplicates')) {
+            state.selectedDuplicates = prevSelectedDuplicates;
+        }
         render(state);
     }
 
@@ -564,10 +569,8 @@
     }
 
     function showDuplicateSelector(duplicates) {
-        setState({ duplicates: duplicates });
+        setState({ duplicates: duplicates, selectedDuplicates: new Set() });
         logMessage(`Encontradas ${duplicates.length} duplicatas. Por favor, faça sua seleção.`);
-
-        // No need for separate optimization - handled in render function
     }
 
     // Batch VCF handling
@@ -758,15 +761,10 @@
         if (searchTitlesInput) searchTitlesInput.disabled = state.isLoading || state.isProcessing;
 
         // Submit button text and disabled state
-        const checkedCheckboxes = duplicatesList.querySelectorAll('input[type="checkbox"]:checked').length;
+        const checkedCount = state.selectedDuplicates ? state.selectedDuplicates.size : duplicatesList.querySelectorAll('input[type="checkbox"]:checked').length;
         if (state.duplicates.length > 0 && !state.isProcessing) {
-            if (checkedCheckboxes > 0) {
-                submitButton.textContent = 'Processar';
-                submitButton.disabled = state.isLoading || state.isProcessing; // Disable if loading/processing
-            } else {
-                submitButton.textContent = 'Pular';
-                submitButton.disabled = state.isLoading || state.isProcessing; // Disable if loading/processing
-            }
+            submitButton.textContent = checkedCount > 0 ? 'Processar' : 'Pular';
+            submitButton.disabled = state.isLoading || state.isProcessing;
         } else if (batchVcfFiles.length > 0 && !state.isProcessing) {
             // Enable submit button when we have batch VCF files
             submitButton.textContent = batchVcfFiles.length === 1 ? 'Processar Arquivo' : 'Processar Arquivos';
@@ -777,8 +775,7 @@
         }
 
 
-        // Populate Duplicates List with search filter and virtual scrolling
-        duplicatesList.innerHTML = ''; // Clear existing
+        // Populate Duplicates List - only re-render if duplicates changed
         const duplicateSearchTerm = searchDuplicatesInput ? searchDuplicatesInput.value.toLowerCase() : '';
         const filteredDuplicates = duplicateSearchTerm ?
             state.duplicates.filter(contact =>
@@ -786,50 +783,16 @@
                 contact.cleaned_number.includes(duplicateSearchTerm)
             ) : state.duplicates;
 
-        if (filteredDuplicates.length > 0) {
-            if (state.duplicates.length > 1000) {
-                // Virtual scrolling for very large lists
-                const itemHeight = 40;
-                const containerHeight = 400;
-                const visibleItems = Math.ceil(containerHeight / itemHeight);
-                const totalHeight = state.duplicates.length * itemHeight;
-
-                duplicatesList.style.height = `${containerHeight}px`;
-                duplicatesList.style.overflowY = 'auto';
-                duplicatesList.innerHTML = `<div style="height: ${totalHeight}px; position: relative;"></div>`;
-
-                const container = duplicatesList.firstChild;
-                let startIndex = 0;
-
-                function renderVisibleItems() {
-                    const scrollTop = duplicatesList.scrollTop;
-                    startIndex = Math.floor(scrollTop / itemHeight);
-                    const endIndex = Math.min(startIndex + visibleItems + 5, state.duplicates.length);
-
-                    container.innerHTML = '';
-                    for (let i = startIndex; i < endIndex; i++) {
-                        const contact = state.duplicates[i];
-                        const div = document.createElement('div');
-                        div.className = 'duplicate-item';
-                        div.style.position = 'absolute';
-                        div.style.top = `${i * itemHeight}px`;
-                        div.style.width = '100%';
-                        div.style.height = `${itemHeight}px`;
-                        const isSelected = state.duplicates.selectedAll || false;
-                        div.innerHTML = `<input type="checkbox" id="dup-${i}" name="selected_duplicates" data-contact='${JSON.stringify(contact)}' ${isSelected ? 'checked' : ''}><label for="dup-${i}">${contact.original_name} (${contact.cleaned_number})</label>`;
-                        container.appendChild(div);
-                    }
-                }
-
-                duplicatesList.addEventListener('scroll', renderVisibleItems);
-                renderVisibleItems();
-            } else {
-                // Standard rendering for smaller lists
+        const currentCount = duplicatesList.querySelectorAll('.duplicate-item').length;
+        if (currentCount !== filteredDuplicates.length) {
+            duplicatesList.innerHTML = '';
+            if (filteredDuplicates.length > 0) {
                 const fragment = document.createDocumentFragment();
                 filteredDuplicates.forEach((contact, index) => {
                     const div = document.createElement('div');
                     div.className = 'duplicate-item';
-                    div.innerHTML = `<input type="checkbox" id="dup-${index}" name="selected_duplicates" data-contact='${JSON.stringify(contact)}'><label for="dup-${index}">${contact.original_name} (${contact.cleaned_number})</label>`;
+                    const isChecked = state.selectedDuplicates && state.selectedDuplicates.has(contact.cleaned_number);
+                    div.innerHTML = `<input type="checkbox" id="dup-${index}" name="selected_duplicates" data-contact='${JSON.stringify(contact)}' ${isChecked ? 'checked' : ''}><label for="dup-${index}">${contact.original_name} (${contact.cleaned_number})</label>`;
                     fragment.appendChild(div);
                 });
                 duplicatesList.appendChild(fragment);
@@ -1026,6 +989,14 @@
         // Event listener for changes within the duplicates list (checkbox clicks)
         duplicatesList.addEventListener('change', (e) => {
             if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') {
+                const contact = JSON.parse(e.target.dataset.contact);
+                if (!state.selectedDuplicates) state.selectedDuplicates = new Set();
+                if (e.target.checked) {
+                    state.selectedDuplicates.add(contact.cleaned_number);
+                } else {
+                    state.selectedDuplicates.delete(contact.cleaned_number);
+                    selectAllCheckbox.checked = false;
+                }
                 updateSubmitButtonText();
             }
         });
@@ -1039,14 +1010,9 @@
             e.stopPropagation();
         });
 
-        // Function to update submit button text based on checked checkboxes
         function updateSubmitButtonText() {
-            const checkedCheckboxes = duplicatesList.querySelectorAll('input[type="checkbox"]:checked').length;
-            if (checkedCheckboxes > 0) {
-                submitButton.textContent = 'Processar';
-            } else {
-                submitButton.textContent = 'Pular';
-            }
+            const count = state.selectedDuplicates ? state.selectedDuplicates.size : duplicatesList.querySelectorAll('input[type="checkbox"]:checked').length;
+            submitButton.textContent = count > 0 ? 'Processar' : 'Pular';
         }
 
 
@@ -1064,6 +1030,13 @@
                     const checkbox = duplicateItem.querySelector('input[type="checkbox"]');
                     if (checkbox) {
                         checkbox.checked = !checkbox.checked;
+                        const contact = JSON.parse(checkbox.dataset.contact);
+                        if (!state.selectedDuplicates) state.selectedDuplicates = new Set();
+                        if (checkbox.checked) {
+                            state.selectedDuplicates.add(contact.cleaned_number);
+                        } else {
+                            state.selectedDuplicates.delete(contact.cleaned_number);
+                        }
                         updateSubmitButtonText();
                     }
                 }
@@ -1086,48 +1059,32 @@
         document.addEventListener('mousemove', (e) => {
             if (isDragging) {
                 const now = Date.now();
-                if (now - lastDragTime < 16) return; // Throttle to 60fps
+                if (now - lastDragTime < 16) return;
                 lastDragTime = now;
 
                 dragStarted = true;
                 const rect = duplicatesList.getBoundingClientRect();
                 const scrollZone = 50;
 
-                // Auto-scroll and select when near edges or outside
                 if ((e.clientY < rect.top + scrollZone || e.clientY < rect.top) && duplicatesList.scrollTop > 0) {
                     duplicatesList.scrollTop -= 5;
-                    setTimeout(() => {
-                        const firstItem = duplicatesList.querySelector('.duplicate-item');
-                        if (firstItem) {
-                            const checkbox = firstItem.querySelector('input[type="checkbox"]');
-                            if (checkbox) {
-                                checkbox.checked = dragMode === 'select';
-                                updateSubmitButtonText();
-                            }
-                        }
-                    }, 5);
                 } else if ((e.clientY > rect.bottom - scrollZone || e.clientY > rect.bottom)) {
                     duplicatesList.scrollTop += 5;
-                    setTimeout(() => {
-                        const items = duplicatesList.querySelectorAll('.duplicate-item');
-                        const lastItem = items[items.length - 1];
-                        if (lastItem) {
-                            const checkbox = lastItem.querySelector('input[type="checkbox"]');
-                            if (checkbox) {
-                                checkbox.checked = dragMode === 'select';
-                                updateSubmitButtonText();
-                            }
-                        }
-                    }, 5);
                 }
 
-                // Select item under mouse
                 if (duplicatesList.contains(e.target)) {
                     const duplicateItem = e.target.closest('.duplicate-item');
                     if (duplicateItem && duplicateItem !== lastSelectedItem) {
                         const checkbox = duplicateItem.querySelector('input[type="checkbox"]');
                         if (checkbox) {
                             checkbox.checked = dragMode === 'select';
+                            const contact = JSON.parse(checkbox.dataset.contact);
+                            if (!state.selectedDuplicates) state.selectedDuplicates = new Set();
+                            if (dragMode === 'select') {
+                                state.selectedDuplicates.add(contact.cleaned_number);
+                            } else {
+                                state.selectedDuplicates.delete(contact.cleaned_number);
+                            }
                             updateSubmitButtonText();
                         }
                         lastSelectedItem = duplicateItem;
@@ -1154,16 +1111,16 @@
 
             const checkedCheckboxes = duplicatesList.querySelectorAll('input[type="checkbox"]:checked');
 
-            if (checkedCheckboxes.length > 0) {
-                // Process selected duplicates
-                const selected_to_reprocess = Array.from(checkedCheckboxes)
-                    .map(cb => JSON.parse(cb.dataset.contact)); // Read from data attribute
+            if (state.selectedDuplicates && state.selectedDuplicates.size > 0) {
+                const selected_to_reprocess = state.duplicates.filter(c => state.selectedDuplicates.has(c.cleaned_number));
+                await continueProcessing(selected_to_reprocess);
+            } else if (checkedCheckboxes.length > 0) {
+                const selected_to_reprocess = Array.from(checkedCheckboxes).map(cb => JSON.parse(cb.dataset.contact));
                 await continueProcessing(selected_to_reprocess);
             } else {
-                // Skip functionality
                 logMessage("Pulando processamento de duplicatas.");
-                await continueProcessing([]); // <<< ALTERADO >>> Chama com lista vazia para processar apenas os únicos
-                setState({ duplicates: [], isProcessing: false, isLoading: false, vcfPath: '' }); // Clear path and duplicates, return to initial state
+                await continueProcessing([]);
+                setState({ duplicates: [], isProcessing: false, isLoading: false, vcfPath: '' });
             }
         });
 
@@ -1194,6 +1151,8 @@
         if (selectAllCheckbox) {
             selectAllCheckbox.addEventListener('change', () => {
                 const isChecked = selectAllCheckbox.checked;
+                state.selectedDuplicates = isChecked ? new Set(state.duplicates.map(c => c.cleaned_number)) : new Set();
+                console.log('Select all:', isChecked, 'Total selected:', state.selectedDuplicates.size);
                 duplicatesList.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = isChecked);
                 updateSubmitButtonText();
             });
@@ -1220,7 +1179,7 @@
                 
                 // Process batch
                 const vcfPaths = batchVcfFiles.map(file => file.path);
-                setState({ isLoading: true, isProcessing: true });
+                setState({ isLoading: true, isProcessing: false });
                 
                 try {
                     const response = await fetch('/start_batch_processing', {
@@ -1241,6 +1200,7 @@
                     logMessage(result.message);
                     
                     if (result.duplicates && result.duplicates.length > 0) {
+                        setState({ isLoading: false, isProcessing: false });
                         showDuplicateSelector(result.duplicates);
                     } else {
                         setState({ isLoading: false, isProcessing: false, vcfPath: '' });

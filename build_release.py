@@ -161,18 +161,7 @@ def build_release(version):
     
     if not create_winrar_installer(app_name, app_source_dir, app_main_exe, installer_output_file): return False
     
-    print("\n--- 5. Publishing to GitHub ---")
-    release_notes = f"VCF Processor v{version} - Self-extracting installer with auto-install and shortcuts."
-    create_cmd = f'gh release create v{version} --repo miguelAngelo1999/vcf --title "VCF Processor v{version}" --notes "{release_notes}"'
-    upload_cmd = f'gh release upload v{version} --repo miguelAngelo1999/vcf "{installer_output_file}" --clobber'
-
-    if not run_command(create_cmd, "GitHub Release Creation"):
-        print("-> Warning: Release might already exist. Attempting to upload asset...")
-        if not run_command(upload_cmd, "GitHub Asset Upload"): return False
-    else:
-        if not run_command(upload_cmd, "GitHub Asset Upload"): return False
-            
-    print(f"\n+ Successfully published to GitHub: https://github.com/miguelAngelo1999/vcf/releases/tag/v{version}")
+    print("\n--- 5. Skipping GitHub (using Google Drive only) ---")
     return True
 
 if __name__ == "__main__":
